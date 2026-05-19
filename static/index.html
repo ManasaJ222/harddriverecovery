@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Autonomous Data Recovery Dashboard</title>
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+    <div class="dashboard-container">
+        <header>
+            <h1>Recovery Agent <span>Dashboard</span></h1>
+            <div class="status-indicator">
+                <div id="connection-dot" class="dot disconnected"></div>
+                <span id="connection-status">Disconnected</span>
+            </div>
+        </header>
+
+        <main>
+            <section class="agent-panel">
+                <div class="panel-header">
+                    <h2>AI Agent Status</h2>
+                    <div class="controls">
+                        <button id="start-btn" class="btn primary">Start Recovery Loop</button>
+                        <button id="stop-btn" class="btn danger" disabled>Stop</button>
+                    </div>
+                </div>
+                
+                <div class="thought-box">
+                    <h3>Current Thought</h3>
+                    <p id="agent-thought">Waiting for agent to start...</p>
+                </div>
+                
+                <div class="action-box">
+                    <h3>Executing Command</h3>
+                    <code id="agent-action">None</code>
+                </div>
+
+                <div class="process-grid">
+                    <div>
+                        <span>Phase</span>
+                        <strong id="process-phase">Idle</strong>
+                    </div>
+                    <div>
+                        <span>Source</span>
+                        <strong id="source-device">-</strong>
+                    </div>
+                    <div>
+                        <span>Output</span>
+                        <strong id="output-directory">-</strong>
+                    </div>
+                    <div>
+                        <span>Source Mount</span>
+                        <strong id="source-mount-dir">-</strong>
+                    </div>
+                    <div>
+                        <span>LLM</span>
+                        <strong id="llm-endpoint">-</strong>
+                    </div>
+                    <div>
+                        <span>Active Model</span>
+                        <strong id="active-model">-</strong>
+                    </div>
+                    <div>
+                        <span>Advisor</span>
+                        <strong id="advisor-command">disabled</strong>
+                    </div>
+                </div>
+            </section>
+
+            <section class="terminal-panel">
+                <div class="panel-header">
+                    <h2>Terminal Output</h2>
+                    <div style="display: flex; gap: 10px; align-items: center;">
+                        <span id="iteration-counter">Iteration: 0/10</span>
+                    </div>
+                </div>
+                <div class="terminal-window" id="terminal-output">
+                    <div class="log-entry system">System: Terminal initialized...</div>
+                </div>
+                <div class="manual-command-box" style="margin-top: 15px; display: flex; gap: 10px;">
+                    <input type="text" id="manual-cmd-input" placeholder="Enter custom command (e.g., lsblk)" style="flex: 1; padding: 8px; border-radius: 4px; border: 1px solid #444; background: #222; color: #fff;">
+                    <button id="manual-cmd-btn" class="btn primary">Run Command</button>
+                </div>
+                <div class="manual-command-box advisor-box">
+                    <input type="text" id="advisor-input" placeholder="Ask advisor for recovery guidance" style="flex: 1; padding: 8px; border-radius: 4px; border: 1px solid #444; background: #222; color: #fff;">
+                    <button id="advisor-btn" class="btn primary">Ask Advisor</button>
+                </div>
+                <div style="margin-top: 10px; font-size: 0.8rem; color: #888;">
+                    Next auto-refresh in: <span id="refresh-countdown">60:00</span>
+                </div>
+            </section>
+        </main>
+    </div>
+    
+    <script>
+        const terminalOutput = document.getElementById('terminal-output');
+        const agentThought = document.getElementById('agent-thought');
+        const agentAction = document.getElementById('agent-action');
+        const iterationCounter = document.getElementById('iteration-counter');
+        const connectionDot = document.getElementById('connection-dot');
+        const connectionStatus = document.getElementById('connection-status');
+        const startBtn = document.getElementById('start-btn');
+        const stopBtn = document.getElementById('stop-btn');
+        const manualCmdInput = document.getElementById('manual-cmd-input');
+        const manualCmdBtn = document.getElementById('manual-cmd-btn');
+        const refreshCountdown = document.getElementById('refresh-countdown');
+        const processPhase = document.getElementById('process-phase');
+        const sourceDevice = document.getElementById('source-device');
+        const outputDirectory = document.getElementById('output-directory');
+        const sourceMountDir = document.getElementById('source-mount-dir');
+        const llmEndpoint = document.getElementById('llm-endpoint');
+        const activeModel = document.getElementById('active-model');
+        const advisorCommand = document.getElementById('advisor-command');
+        const advisorInput = document.getElementById('advisor-input');
+        const advisorBtn = document.getElementById('advisor-btn');
+        
+        let ws;
+        
+        function connectWebSocket() {
+            ws = new WebSocket(`ws://${window.location.host}/ws`);
+            
+            ws.onopen = () => {
+                connectionDot.className = 'dot connected';
+                connectionStatus.textContent = 'Connected';
+                appendLog('System', 'Connected to Agent WebSocket.', 'system');
+            };
+            
+            ws.onclose = () => {
+                connectionDot.className = 'dot disconnected';
+                connectionStatus.textContent = 'Disconnected';
+                appendLog('System', 'Disconnected from Agent WebSocket. Retrying...', 'system');
+                setTimeout(connectWebSocket, 2000);
+            };
+            
+            ws.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                
+                if (data.type === 'snapshot') {
+                    applySnapshot(data);
+                } else if (data.type === 'log') {
+                    const level = data.level || 'info';
+                    const prefix = level === 'error' ? 'Error' : 'Info';
+                    appendLog(prefix, data.message, level);
+                } else if (data.type === 'iteration') {
+                    iterationCounter.textContent = `Iteration: ${data.current}/${data.max}`;
+                } else if (data.type === 'thought') {
+                    agentThought.textContent = data.thought;
+                    agentThought.classList.add('highlight');
+                    setTimeout(() => agentThought.classList.remove('highlight'), 500);
+                } else if (data.type === 'action') {
+                    agentAction.textContent = data.action;
+                } else if (data.type === 'output') {
+                    appendLog('Output', data.output, 'output');
+                } else if (data.type === 'error') {
+                    appendLog('Error', data.message, 'error');
+                } else if (data.type === 'status') {
+                    updateRunControls(data.running);
+                    processPhase.textContent = data.phase || (data.running ? 'Running' : 'Idle');
+                    if (data.active_model) activeModel.textContent = data.active_model;
+                }
+            };
+        }
+
+        function applySnapshot(snapshot) {
+            updateRunControls(snapshot.running);
+            processPhase.textContent = snapshot.phase || 'Idle';
+            sourceDevice.textContent = snapshot.source_device || '-';
+            outputDirectory.textContent = snapshot.output_directory || '-';
+            sourceMountDir.textContent = snapshot.source_mount_dir || '-';
+            llmEndpoint.textContent = snapshot.llm_api_url || '-';
+            activeModel.textContent = snapshot.active_model || snapshot.model_queue?.[0] || '-';
+            advisorCommand.textContent = snapshot.advisor_command || 'disabled';
+            agentThought.textContent = snapshot.thought || 'Waiting for agent to start...';
+            agentAction.textContent = snapshot.action || 'None';
+            iterationCounter.textContent = `Iteration: ${snapshot.current_iteration || 0}/${snapshot.max_iterations || 0}`;
+
+            terminalOutput.innerHTML = '';
+            if (Array.isArray(snapshot.events) && snapshot.events.length > 0) {
+                snapshot.events.forEach(renderEvent);
+            } else {
+                appendLog('System', 'Terminal initialized...', 'system');
+            }
+        }
+
+        function updateRunControls(running) {
+            startBtn.disabled = Boolean(running);
+            stopBtn.disabled = !running;
+        }
+
+        function renderEvent(event) {
+            if (event.type === 'output') {
+                appendLog('Output', event.output, 'output');
+                return;
+            }
+            const level = event.level || 'info';
+            const prefix = level === 'error' ? 'Error' : level === 'system' ? 'System' : 'Info';
+            appendLog(prefix, event.message || '', level);
+        }
+        
+        function appendLog(prefix, message, type) {
+            const entry = document.createElement('div');
+            entry.className = `log-entry ${type}`;
+            entry.textContent = `[${prefix}] ${message}`;
+            terminalOutput.appendChild(entry);
+            terminalOutput.scrollTop = terminalOutput.scrollHeight;
+        }
+
+        startBtn.addEventListener('click', () => {
+            fetch('/start', { method: 'POST' });
+        });
+
+        stopBtn.addEventListener('click', () => {
+            fetch('/stop', { method: 'POST' });
+        });
+
+        manualCmdBtn.addEventListener('click', async () => {
+            const cmd = manualCmdInput.value.trim();
+            if (!cmd) return;
+            
+            appendLog('Manual', `Executing: ${cmd}`, 'info');
+            manualCmdInput.value = '';
+            manualCmdBtn.disabled = true;
+            
+            try {
+                const res = await fetch('/execute_command', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ command: cmd })
+                });
+                const data = await res.json();
+                if (!ws || ws.readyState !== WebSocket.OPEN) {
+                    appendLog('Manual', data.output, 'output');
+                }
+            } catch (err) {
+                appendLog('Error', `Manual command failed: ${err}`, 'error');
+            } finally {
+                manualCmdBtn.disabled = false;
+            }
+        });
+
+        manualCmdInput.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter') manualCmdBtn.click();
+        });
+
+        advisorBtn.addEventListener('click', async () => {
+            const prompt = advisorInput.value.trim();
+            if (!prompt) return;
+
+            appendLog('Advisor', `Asking: ${prompt}`, 'info');
+            advisorInput.value = '';
+            advisorBtn.disabled = true;
+
+            try {
+                const res = await fetch('/advisor', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ prompt })
+                });
+                const data = await res.json();
+                if (!ws || ws.readyState !== WebSocket.OPEN) {
+                    appendLog('Advisor', data.output, 'output');
+                }
+            } catch (err) {
+                appendLog('Error', `Advisor request failed: ${err}`, 'error');
+            } finally {
+                advisorBtn.disabled = false;
+            }
+        });
+
+        advisorInput.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter') advisorBtn.click();
+        });
+
+        // Auto refresh logic (1 hour = 3600 seconds)
+        let timeToRefresh = 3600;
+        setInterval(() => {
+            timeToRefresh--;
+            if (timeToRefresh <= 0) {
+                window.location.reload();
+            } else {
+                const m = Math.floor(timeToRefresh / 60).toString().padStart(2, '0');
+                const s = (timeToRefresh % 60).toString().padStart(2, '0');
+                refreshCountdown.textContent = `${m}:${s}`;
+            }
+        }, 1000);
+
+        connectWebSocket();
+    </script>
+</body>
+</html>
